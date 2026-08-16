@@ -514,6 +514,60 @@ let pendingTeams = {};
 let filter = "all";
 let uploadedPic = null;
 
+/* ============================== PERSISTENT STORAGE ==============================
+   Everything below saves the league's data to a SHARED storage key, so it survives
+   page reloads and is visible to everyone who opens this app (that's what makes it
+   a real shared league instead of a private sandbox). Login state (who's currently
+   signed in on this device) is saved separately, per-browser, so it isn't shared. */
+const DB_KEY = 'ffl_league_db';
+const SESSION_KEY = 'ffl_session';
+
+function collectState(){
+ return { admins, managers, ff_players, currentSeason, pastSeasons, players, teams, contractOffers, approvals, pendingSubmissions, pendingTeams };
+}
+
+async function saveState(){
+ try {
+  await window.storage.set(DB_KEY, JSON.stringify(collectState()), true);
+ } catch(e){ console.error('Save failed', e); toast('Could not save — changes may not persist.'); }
+}
+
+async function saveSession(){
+ try {
+  await window.storage.set(SESSION_KEY, JSON.stringify({ user: currentUser, role: currentRole }), false);
+ } catch(e){ /* non-fatal — worst case you just have to log in again */ }
+}
+
+async function loadState(){
+ try {
+  const res = await window.storage.get(DB_KEY, true);
+  if(res && res.value){
+   const d = JSON.parse(res.value);
+   admins = d.admins || admins;
+   managers = d.managers || {};
+   ff_players = d.ff_players || {};
+   currentSeason = d.currentSeason || 1;
+   pastSeasons = d.pastSeasons || [];
+   players = d.players || [];
+   teams = d.teams || [];
+   contractOffers = d.contractOffers || [];
+   approvals = d.approvals || [];
+   pendingSubmissions = d.pendingSubmissions || {};
+   pendingTeams = d.pendingTeams || {};
+  }
+ } catch(e){ /* nothing saved yet — first time this league has ever loaded */ }
+
+ try {
+  const res = await window.storage.get(SESSION_KEY, false);
+  if(res && res.value){
+   const s = JSON.parse(res.value);
+   if(s.user && s.role === 'admin' && admins[s.user]) { currentUser = s.user; currentRole = 'admin'; }
+   else if(s.user && s.role === 'manager' && managers[s.user]) { currentUser = s.user; currentRole = 'manager'; }
+   else if(s.user && s.role === 'player' && ff_players[s.user]) { currentUser = s.user; currentRole = 'player'; }
+  }
+ } catch(e){ /* no saved session on this device */ }
+}
+
 function money(n){return "$"+Number(n).toFixed(2)+"M"}
 
 // --- AUTHENTICATION & LOGIN CATEGORIZATION ---
@@ -558,6 +612,8 @@ function userSignup() {
  updateAuthHeader(u, currentRole);
  initUserSpace();
  closeModal();
+ saveState();
+ saveSession();
 }
 
 function openUserLogin() {
@@ -606,6 +662,7 @@ function adminLogin() {
      initUserSpace();
      closeModal();
      toast("Admin override engaged.");
+     saveSession();
  } else {
      toast("Invalid Admin credentials.");
  }
@@ -636,6 +693,7 @@ function userLogin() {
  initUserSpace();
  closeModal();
  toast(`Logged in as ${u}`);
+ saveSession();
 }
 
 function updateAuthHeader(u, role) {
@@ -655,6 +713,7 @@ function userLogout() {
  initUserSpace();
  go('home');
  toast("Logged out.");
+ saveSession();
 }
 
 // --- INITIALIZATION & DYNAMIC NAV ---
@@ -992,6 +1051,7 @@ function submitBid(id){
  closeModal();
  toast(`Offer submitted.`);
  renderApprovals();
+ saveState();
 }
 
 function respondOffer(offerId, accepted) {
@@ -1005,6 +1065,7 @@ function respondOffer(offerId, accepted) {
         toast("Offer rejected.");
     }
     renderPlayerCareer();
+    saveState();
 }
 
 // --- SUBMISSION FORMS ---
@@ -1067,6 +1128,7 @@ function submitPlayer(){
  approvals.push({id:approvalId, type:"PLAYER SUBMISSION", name:name.toUpperCase(), detail:`Submitted by ${currentUser ? currentUser : 'User'}. Awaiting Admin verification`});
  uploadedPic=null;
  renderApprovals(); closeModal(); toast("Profile submitted to Admin Queue.");
+ saveState();
 }
 
 function openTeam(){
@@ -1085,6 +1147,7 @@ function createTeam(){
  approvals.push({id:approvalId,type:"TEAM CREATION",name:n.toUpperCase(),detail:`Manager: ${currentUser ? currentUser : "User"} · Format: ${format}`});
  
  renderApprovals();closeModal();toast("Team application sent to Admin.");
+ saveState();
 }
 
 // --- ADMIN DIRECT ACTIONS ---
@@ -1115,6 +1178,7 @@ function adminDirectAddPlayer() {
  players.push({ id: Date.now(), name: name.toUpperCase(), role, pic: null, price: DEFAULT_PRICE, kad: kda, hs, win, tag: "rising", ownerTeam: null, linkedUser: null });
  renderPlayers(); renderLeaders(); renderStatsForm(); closeModal();
  toast(`Player ${name.toUpperCase()} added instantly.`);
+ saveState();
 }
 
 function openAdminDirectCreateTeam() {
@@ -1140,6 +1204,7 @@ function adminDirectCreateTeam() {
  
  renderTeams(); closeModal();
  toast(`Team ${n.toUpperCase()} created instantly.`);
+ saveState();
 }
 
 // --- ADMIN APPROVAL EXECUTION ---
@@ -1182,6 +1247,7 @@ function approve(id){
  approvals=approvals.filter(x=>x.id!==id);
  renderPlayers();renderTeams();renderLeaders();renderApprovals();renderStatsForm();
  toast("Approved & Published: "+a.name);
+ saveState();
 }
 
 function reject(id){
@@ -1198,6 +1264,7 @@ function reject(id){
  
  approvals=approvals.filter(x=>x.id!==id);
  renderApprovals();toast("Rejected: "+a.name)
+ saveState();
 }
 
 function saveStats(){
@@ -1222,6 +1289,7 @@ function saveStats(){
  }
  
  renderPlayers();renderLeaders();renderTeams();toast(`Stats updated for ${p.name}.`);
+ saveState();
 }
 
 function endSeason() {
@@ -1252,6 +1320,7 @@ function endSeason() {
  
  renderTeams(); renderPlayers(); renderLeaders(); initUserSpace();
  toast(`Season ${currentSeason-1} archived. Welcome to Season ${currentSeason}!`);
+ saveState();
 }
 
 // --- UTILS & NAVIGATION ---
@@ -1280,9 +1349,15 @@ function go(id){
 
 document.querySelectorAll(".filter").forEach(b=>b.onclick=()=>{filter=b.dataset.filter;document.querySelectorAll(".filter").forEach(x=>x.classList.remove("active"));b.classList.add("active");renderPlayers()});
 
-// Initial Startup
-initUserSpace();
-go('home');
+// Initial Startup — pull any previously saved league data and login session
+// before the first render, instead of always starting from a blank slate.
+(async function boot(){
+ await loadState();
+ document.getElementById("uiSeasonText").textContent = "SEASON " + (currentSeason < 10 ? "0"+currentSeason : currentSeason);
+ if(currentUser){ updateAuthHeader(currentUser, currentRole); }
+ initUserSpace();
+ go('home');
+})();
 </script>
 </body>
 </html>
